@@ -1,0 +1,9 @@
+main.cpp
+
+#include <iomanip> // for I/O formatting, contains the definition of std::fixed, std:setprecision
+
+std::cout << std::fixed << std::setprecision(6);  // tells the output stream to use fixed-point notation (as opposed to scientific) and 6 digits of precision until told otherwise
+
+FXOption.cpp: 
+name(std::move(name_))
+This is using move semantics to efficiently transfer the contents of the string parameter name_ into the member variable name.

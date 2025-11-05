@@ -1,0 +1,146 @@
+// FXOption.cpp
+#include <iostream>
+#include <iomanip>
+#include <memory>
+#include <string>
+#include "Utils.h"
+#include "MarketData.h"
+// ---------- Option description (European vanilla) ----------
+
+// ---------- Pricer (Garman–Kohlhagen for FX) ----------
+class FXOptionPricer {
+public:
+    enum Type { Call, Put };
+
+    FXOptionPricer(Type type_, double strike_, double maturityYears_, std::string name_ = "")
+        : type(type_), K(strike_), T(maturityYears_), name(std::move(name_)) {
+    }
+
+    virtual ~FXOptionPricer() = default;
+
+    Type type;
+    double K;    // strike
+    double T;    // time to expiry in years
+    std::string name;
+
+    struct Result {     // used to return price and risks
+        double price;
+        double delta;
+        double gamma;
+        double vega;
+        double theta;   // per year
+        double rho_dom; // sensitivity to domestic rate rd
+        double rho_for; // sensitivity to foreign rate rf
+    };
+
+    Result price(const MarketData& mkt_) const {    //(const MarketData& mkt) : mkt_(mkt) {}
+        if (T <= 0.0) {
+            // case where the option is expiring now, to avoid divide by zero errors
+            double intrinsic = payoffAtExpiry(mkt_); // price output
+            return { intrinsic, (type == FXOptionPricer::Call) ? ((mkt_.spot > K) ? 1.0 : 0.0)  // delta
+                                                         : ((mkt_.spot < K) ? -1.0 : 0.0),
+                    0.0, 0.0, 0.0, 0.0, 0.0 };  // other risks
+        }
+
+        const double S = mkt_.spot;
+        const double sigma = mkt_.vol;
+        const double rd = mkt_.rd;
+        const double rf = mkt_.rf;
+
+        const double sqrtT = std::sqrt(T);
+        const double sigmaSqrtT = sigma * sqrtT;
+
+        const double lnSK = std::log(S / K);
+        const double drift = (rd - rf);
+        const double d1 = (lnSK + (drift + 0.5 * sigma * sigma) * T) / sigmaSqrtT;
+        const double d2 = d1 - sigmaSqrtT;
+
+        const double df_dom = std::exp(-rd * T); // domestic discount factor 
+        const double df_for = std::exp(-rf * T); // foreign discount factor 
+
+        double price = 0.0;
+
+        // Delta
+        double delta = 0.0;
+        if (type == FXOptionPricer::Call) {
+            price = S * df_for * normalCDF(d1) - K * df_dom * normalCDF(d2);
+            delta = df_for * normalCDF(d1);
+        }
+        else { // Put option
+            price = K * df_dom * normalCDF(-d2) - S * df_for * normalCDF(-d1);
+            delta = -df_for * normalCDF(-d1);
+        }
+
+        // Gamma and Vega
+        const double pdf_d1 = normalPDF(d1);
+        const double gamma = df_for * pdf_d1 / (S * sigmaSqrtT);
+        const double vega = S * df_for * pdf_d1 * sqrtT; 
+
+        // Theta
+        double theta = 0.0;
+        if (type == FXOptionPricer::Call) {
+            theta = -(S * df_for * pdf_d1 * sigma) / (2.0 * sqrtT)
+                - rf * S * df_for * normalCDF(d1)
+                + rd * K * df_dom * normalCDF(d2);
+        }
+        else {  // Put option
+            theta = -(S * df_for * pdf_d1 * sigma) / (2.0 * sqrtT)
+                + rf * S * df_for * normalCDF(-d1)
+                - rd * K * df_dom * normalCDF(-d2);
+        }
+
+        // Rhos (domestic and foreign)
+        double rho_dom = 0.0;
+        double rho_for = 0.0;
+        if (type == FXOptionPricer::Call) {
+            rho_dom = -T * K * df_dom * normalCDF(d2);
+            rho_for = -T * S * df_for * normalCDF(d1); 
+        }
+        else {  // Put option
+            rho_dom = T * K * df_dom * normalCDF(-d2);
+            rho_for = T * S * df_for * normalCDF(-d1);
+        }
+
+        return { price, delta, gamma, vega, theta, rho_dom, rho_for };
+    }
+
+private:
+
+    double payoffAtExpiry(const MarketData& mkt_) const {
+        if (type == FXOptionPricer::Call) {
+            return std::max(mkt_.spot - K, 0.0);
+        }
+        else {
+            return std::max(K - mkt_.spot, 0.0);
+        }
+    }
+};
+
+// ---------- Example usage ----------
+int main() {
+    // Example market data:
+    // Spot = 1.15 domestic per foreign (e.g. USD per EUR)
+    // vol = 12% (0.12)
+    // rd = 4% domestic interest, rf = 2% foreign interest
+    MarketData mkt(1.15, 0.12, 0.04, 0.02);
+
+    // Option: European call, strike 1.2, 6 months to expiry
+
+    FXOptionPricer pricer(FXOptionPricer::Call, 1.2, 0.5, "EURUSD_1.2_6m_Call");   // creates an object pricer from mkt, by invoking FXOptionPricer's constructor
+    auto r = pricer.price(mkt);
+
+    std::cout << std::fixed << std::setprecision(6);
+    std::cout << "Option: " << pricer.name << "\n";
+    std::cout << "Spot S = " << mkt.spot << ", Strike K = " << pricer.K << ", T = " << pricer.T << " years\n";
+    std::cout << "Vol = " << mkt.vol << ", rd = " << mkt.rd << ", rf = " << mkt.rf << "\n\n";
+
+    std::cout << "Price = " << r.price << " (in domestic currency per option unit)\n";
+    std::cout << "Delta = " << r.delta << "\n";
+    std::cout << "Gamma = " << r.gamma << "\n";
+    std::cout << "Vega  = " << r.vega << " (per absolute vol. unit)\n";
+    std::cout << "Theta = " << r.theta << " (per year)\n";
+    std::cout << "Rho (domestic) = " << r.rho_dom << "\n";
+    std::cout << "Rho (foreign)  = " << r.rho_for << "\n";
+
+    return 0;
+}
